@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 globalThis.HTMLElement = class {};
-const { discoverPlayers, hasFeature, memberIds, escapeHtml } = await import('../MaverickMusic.js');
+const { discoverPlayers, hasFeature, memberIds, escapeHtml, searchItems,
+  musicConfigEntry, MaverickMusicCard } = await import('../MaverickMusic.js');
 
 const mass = (id, extra = {}) => ({ entity_id: id, state:'playing', attributes:{ friendly_name:id, mass_player_type:'player', supported_features:524292, ...extra } });
 
@@ -27,4 +28,57 @@ test('group members and dynamic text are handled safely', () => {
   assert.deepEqual(memberIds(mass('media_player.a',{ group_members:['media_player.b',null] })), ['media_player.b']);
   assert.deepEqual(memberIds(mass('media_player.a')), []);
   assert.equal(escapeHtml('<Living & "Room">'), '&lt;Living &amp; &quot;Room&quot;&gt;');
+});
+
+test('search uses the selected Music Assistant instance and returned URIs for playback', async () => {
+  const player = mass('media_player.living');
+  const calls = [];
+  const card = Object.create(MaverickMusicCard.prototype);
+  card._config = {};
+  card._hass = {
+    entities: { [player.entity_id]: { config_entry_id:'ma-entry' } },
+    callService: async (...args) => {
+      calls.push(args);
+      return args[1] === 'search' ? { response: { tracks:[{ name:'Song', uri:'library://track/1' }] } } : {};
+    },
+  };
+  card._selected = () => player;
+  card._players = () => [player];
+  card._render = () => {};
+  card._searchResults = [];
+  card._searchVersion = 0;
+  assert.equal(musicConfigEntry(card._hass, player, card._config), 'ma-entry');
+  await card._search(' Song ');
+  assert.deepEqual(calls[0], ['music_assistant', 'search',
+    { config_entry_id:'ma-entry', name:'Song', limit:8 }, undefined, false, true]);
+  assert.deepEqual(searchItems({ response:{ tracks:[{ name:'Song', uri:'library://track/1' }] } })[0].media_type, 'track');
+  assert.equal(card._searchResults.length, 1);
+  await card._playResult(0, false);
+  assert.deepEqual(calls[1], ['music_assistant', 'play_media',
+    { media_id:'library://track/1', media_type:'track', enqueue:'replace' },
+    { entity_id:'media_player.living' }]);
+  assert.equal(card._view, 'player');
+});
+
+test('progress-only updates preserve the player DOM', () => {
+  const player = mass('media_player.living', { media_title:'Song', media_position:5, media_duration:90 });
+  const tile = { innerHTML:'', hidden:false };
+  const inline = { innerHTML:'', hidden:false, querySelector:() => null };
+  const card = Object.create(MaverickMusicCard.prototype);
+  card.isConnected = true;
+  card._initialized = true;
+  card._config = { layout:'full' };
+  card._hass = { states:{ [player.entity_id]:player } };
+  card._view = 'player';
+  card._error = '';
+  card._searchResults = [];
+  card._searching = false;
+  card._searchQuery = '';
+  card._dialog = { open:false };
+  card.shadowRoot = { querySelector:(selector) => selector === '.tile' ? tile : inline, activeElement:null };
+  card._render();
+  const original = inline.innerHTML;
+  Object.defineProperty(inline, 'innerHTML', { get:() => original, set:() => { throw new Error('progress rebuilt the DOM'); } });
+  player.attributes.media_position = 6;
+  card._render();
 });
