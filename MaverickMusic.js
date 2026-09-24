@@ -611,9 +611,17 @@ export class MaverickMusicCardEditor extends HTMLElement {
         delete next.exclude_entities;
       } else {
         const players = editorPlayers(this._hass);
+        if (!players.length && !this._config.entities?.length) {
+          control.value = 'all';
+          const notice = this.shadowRoot.querySelector('#notice');
+          notice.textContent = 'Wait for Music Assistant players to appear before limiting the list.';
+          notice.hidden = false;
+          return;
+        }
         next.entities = this._config.entities || players.map((p) => p.entity_id)
           .filter((id) => !this._config.exclude_entities?.includes(id));
         delete next.exclude_entities;
+        if (next.entity && !next.entities.includes(next.entity)) delete next.entity;
       }
     } else if (control.name === 'player') {
       const choices = [...this.shadowRoot.querySelectorAll('[name="player"]:checked')].map((input) => input.value);
