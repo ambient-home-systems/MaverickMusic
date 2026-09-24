@@ -83,6 +83,75 @@ test('progress-only updates preserve the player DOM', () => {
   card._render();
 });
 
+test('joining targets the leader and reports service errors to the speaker page', async () => {
+  const leader = mass('media_player.living');
+  const member = mass('media_player.kitchen');
+  const calls = [];
+  const card = Object.create(MaverickMusicCard.prototype);
+  card._hass = { callService: async (...args) => { calls.push(args); } };
+  card._config = {};
+  card._players = () => [leader, member];
+  card._render = () => {};
+  await card._join(leader, member.entity_id);
+  assert.deepEqual(calls, [['media_player', 'join',
+    { group_members:[member.entity_id] }, { entity_id:leader.entity_id }]]);
+  assert.equal(card._pendingJoin.member, member.entity_id);
+  clearTimeout(card._joinTimer);
+  card._pendingJoin = null;
+  card._hass.callService = async () => { throw new Error('Speakers cannot sync'); };
+  await card._join(leader, member.entity_id);
+  assert.equal(card._error, 'Speakers cannot sync');
+  assert.equal(card._pendingJoin, null);
+});
+
+test('volume updates preserve the room DOM and an active slider', () => {
+  const leader = mass('media_player.living', { volume_level:0.3 });
+  const member = mass('media_player.kitchen', { volume_level:0.4 });
+  let writes = 0;
+  const active = { dataset:{ id:member.entity_id }, value:'74', parentElement:{ querySelector:() => ({ value:'' }) } };
+  const passiveOutput = { value:'' };
+  const passive = { dataset:{ id:leader.entity_id }, value:'30', parentElement:{ querySelector:() => passiveOutput } };
+  const inline = { querySelector:() => null, querySelectorAll:() => [active, passive],
+    set innerHTML(value) { writes++; }, get innerHTML() { return ''; } };
+  const tile = { hidden:false, innerHTML:'' };
+  const card = Object.create(MaverickMusicCard.prototype);
+  card.isConnected = true;
+  card._initialized = true;
+  card._config = { layout:'full' };
+  card._hass = { states:{ [leader.entity_id]:leader, [member.entity_id]:member } };
+  card._view = 'rooms';
+  card._error = '';
+  card._dialog = { open:false };
+  card.shadowRoot = { activeElement:active, querySelector:(selector) => selector === '.tile' ? tile : inline };
+  card._render();
+  leader.attributes.volume_level = 0.65;
+  member.attributes.volume_level = 0.8;
+  card._render();
+  assert.equal(writes, 1);
+  assert.equal(passive.value, 65);
+  assert.equal(passiveOutput.value, '65%');
+  assert.equal(active.value, '74');
+});
+
+test('rapid Home Assistant updates render at most once per animation frame', () => {
+  const original = globalThis.requestAnimationFrame;
+  let callback;
+  let renders = 0;
+  globalThis.requestAnimationFrame = (next) => { callback = next; return 1; };
+  try {
+    const card = Object.create(MaverickMusicCard.prototype);
+    card.isConnected = true;
+    card._render = () => { renders++; };
+    card.hass = { states:{} };
+    card.hass = { states:{} };
+    assert.equal(renders, 0);
+    callback();
+    assert.equal(renders, 1);
+  } finally {
+    globalThis.requestAnimationFrame = original;
+  }
+});
+
 test('favorite library loads on demand and can play a playlist', async () => {
   const player = mass('media_player.living');
   const calls = [];
