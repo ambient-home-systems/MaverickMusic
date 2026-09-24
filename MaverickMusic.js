@@ -249,7 +249,7 @@ export class MaverickMusicCard extends HTMLElement {
     this._init();
     const players = this._players();
     const player = this._selected(players);
-    if (this._pendingJoin?.leader === player?.entity_id && memberIds(player).includes(this._pendingJoin.member)) {
+    if (this._pendingJoin && memberIds(this._hass?.states?.[this._pendingJoin.leader]).includes(this._pendingJoin.member)) {
       clearTimeout(this._joinTimer);
       this._pendingJoin = null;
       this._error = '';
@@ -383,7 +383,7 @@ export class MaverickMusicCard extends HTMLElement {
         const vol = Math.round((Number(room.attributes?.volume_level) || 0) * 100);
         return `<div class="room-row"><div><strong>${name}</strong><small>${selected ? 'Selected player' : member ? 'Joined to selected player' : unavailable ? 'Unavailable' : room.state === 'playing' ? 'Playing' : 'Ready'}</small></div>
           <div class="row-buttons"><button data-action="select" data-id="${id}" class="${selected ? 'selected' : ''}" aria-label="Control ${name}" ${selected ? 'disabled' : ''}>${selected ? 'Selected' : 'Control'}</button>
-          ${!selected && (canJoin || member) && sameInstance ? `<button data-action="${member ? 'unjoin' : 'join'}" data-id="${id}" aria-label="${member ? 'Remove' : 'Join'} ${name}" ${this._busy || unavailable || pending ? 'disabled' : ''}>${pending ? 'Joining…' : member ? 'Remove' : 'Join'}</button>` : ''}</div>
+          ${!selected && (canJoin || member) && sameInstance ? `<button data-action="${member ? 'unjoin' : 'join'}" data-id="${id}" aria-label="${member ? 'Remove' : 'Join'} ${name}" ${this._busy || unavailable || this._pendingJoin ? 'disabled' : ''}>${pending ? 'Joining…' : member ? 'Remove' : 'Join'}</button>` : ''}</div>
           ${hasFeature(room, FEATURE.VOLUME_SET) && !unavailable ? `<label class="room-volume">Volume <input type="range" min="0" max="100" value="${vol}" data-action="room-volume" data-id="${id}" aria-label="${name} volume"><output>${vol}%</output></label>` : ''}
         </div>`;
       }).join('')}
