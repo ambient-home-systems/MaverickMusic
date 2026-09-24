@@ -42,6 +42,24 @@ function artwork(player) {
   return url ? `<img src="${escapeHtml(url)}" alt="" loading="lazy">` : '<span aria-hidden="true">♫</span>';
 }
 
+const SEARCH_TYPES = Object.freeze([
+  ['tracks', 'track', 'Songs'], ['albums', 'album', 'Albums'],
+  ['artists', 'artist', 'Artists'], ['playlists', 'playlist', 'Playlists'],
+  ['radio', 'radio', 'Radio'], ['audiobooks', 'audiobook', 'Audiobooks'],
+  ['podcasts', 'podcast', 'Podcasts'],
+]);
+
+export function searchItems(response) {
+  const data = response?.response || response || {};
+  return SEARCH_TYPES.flatMap(([key, type, label]) =>
+    (Array.isArray(data[key]) ? data[key] : []).filter((item) => typeof item?.uri === 'string')
+      .map((item) => ({ ...item, media_type: type, section: label })));
+}
+
+export function musicConfigEntry(hass, player, config = {}) {
+  return config.config_entry_id || hass?.entities?.[player?.entity_id]?.config_entry_id || '';
+}
+
 const CSS = `
   :host { display:block; color:#f9f8f8; font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
   * { box-sizing:border-box; }
@@ -62,6 +80,20 @@ const CSS = `
   dialog { position:fixed; inset:0; width:min(100vw,440px); height:100dvh; max-width:none; max-height:none; margin:auto; padding:0; border:0; color:inherit; background:#16181d; overflow:auto; overscroll-behavior:contain; box-shadow:0 0 70px #0009; }
   dialog::backdrop { background:#000b; }
   .page { min-height:100%; padding:calc(18px + env(safe-area-inset-top)) 21px calc(24px + env(safe-area-inset-bottom)); }
+  .inline { min-height:calc(100dvh - 100px); width:100%; background:#16181d; border-radius:22px; overflow:hidden; }
+  .inline .page { min-height:calc(100dvh - 100px); max-width:720px; margin:auto; }
+  .tabs { display:flex; gap:8px; margin:18px 0 6px; }
+  .tabs button { flex:1; min-height:43px; border:0; border-radius:13px; background:#ffffff12; color:#d9d4d7; font-size:12px; font-weight:700; }
+  .tabs button.active { background:#f1e4dd; color:#30272b; }
+  .search-form { display:flex; gap:8px; margin:25px 0 14px; }
+  .search-form input { min-width:0; flex:1; padding:12px 14px; border:1px solid #ffffff35; border-radius:12px; color:white; background:#ffffff12; }
+  .search-form button { border:0; border-radius:12px; padding:0 16px; color:#30272b; background:#f1e4dd; font-weight:750; }
+  .result { width:100%; display:flex; align-items:center; gap:12px; text-align:left; padding:10px 0; border:0; border-bottom:1px solid #ffffff19; color:inherit; background:transparent; }
+  .result .small-art { width:48px; height:48px; font-size:23px; }
+  .result-copy { min-width:0; flex:1; }
+  .result-copy strong,.result-copy small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .result-copy small { color:#a9adba; margin-top:3px; }
+  .result .add { font-size:22px; width:40px; min-height:40px; display:grid; place-items:center; }
   .player { background:radial-gradient(ellipse 110% 58% at 50% 16%,#72615c 0%,#373940 48%,transparent 100%),#16181d; }
   .top { display:flex; align-items:center; justify-content:space-between; min-height:45px; gap:10px; }
   .eyebrow { text-transform:uppercase; letter-spacing:.15em; font-size:10px; font-weight:800; color:#d2cbd0; text-align:center; }
@@ -108,9 +140,14 @@ export class MaverickMusicCard extends HTMLElement {
     this._busy = false;
     this._error = '';
     this._initialized = false;
+    this._searchResults = [];
+    this._searchQuery = '';
+    this._searching = false;
+    this._searchVersion = 0;
   }
 
   setConfig(config) {
+    if (config.layout && !['full', 'popup'].includes(config.layout)) throw new Error('layout must be full or popup');
     if (config.entities && (!Array.isArray(config.entities) || !config.entities.every((id) => typeof id === 'string'))) {
       throw new Error('entities must be a list of entity IDs');
     }
@@ -118,6 +155,7 @@ export class MaverickMusicCard extends HTMLElement {
       throw new Error('exclude_entities must be a list of entity IDs');
     }
     this._config = config;
+    this._signature = '';
     this._selectedId = config.entity || this._selectedId;
     this._render();
   }
@@ -127,18 +165,35 @@ export class MaverickMusicCard extends HTMLElement {
     this._render();
   }
 
-  getCardSize() { return 2; }
-  static getStubConfig() { return {}; }
+  getCardSize() { return this._config.layout === 'popup' ? 2 : 10; }
+  static getStubConfig() { return { layout: 'full' }; }
 
-  connectedCallback() { this._render(); }
+  connectedCallback() {
+    this._render();
+    this._progressTimer = setInterval(() => {
+      if (this._view !== 'player') return;
+      const player = this._selected(this._players());
+      if (player?.state === 'playing' && this._container) this._patchProgress(this._container, player);
+    }, 1000);
+  }
+
+  disconnectedCallback() {
+    clearInterval(this._progressTimer);
+    this._searchVersion++;
+  }
 
   _init() {
     if (this._initialized) return;
-    this.shadowRoot.innerHTML = `<style>${CSS}</style><button type="button" class="tile" data-action="open"></button><dialog aria-label="MaverickMusic player"><div id="content"></div></dialog>`;
+    this.shadowRoot.innerHTML = `<style>${CSS}</style><button type="button" class="tile" data-action="open"></button><div class="inline" id="inline-content"></div><dialog aria-label="MaverickMusic player"><div id="content"></div></dialog>`;
     this._dialog = this.shadowRoot.querySelector('dialog');
     this._dialog.addEventListener('close', () => { this._view = 'player'; this._error = ''; });
     this.shadowRoot.addEventListener('click', (event) => this._click(event));
     this.shadowRoot.addEventListener('change', (event) => this._change(event));
+    this.shadowRoot.addEventListener('submit', (event) => {
+      if (!event.target.matches('.search-form')) return;
+      event.preventDefault();
+      this._search(event.target.querySelector('input').value);
+    });
     this.shadowRoot.addEventListener('input', (event) => {
       if (event.target.matches('[data-action="room-volume"]')) {
         event.target.parentElement.querySelector('output').value = `${event.target.value}%`;
@@ -163,11 +218,15 @@ export class MaverickMusicCard extends HTMLElement {
     this._init();
     const players = this._players();
     const player = this._selected(players);
+    const popup = this._config.layout === 'popup';
     const tile = this.shadowRoot.querySelector('.tile');
+    tile.hidden = !popup;
+    this.shadowRoot.querySelector('.inline').hidden = popup;
     if (!player) {
       tile.innerHTML = `<span class="small-art" aria-hidden="true">♫</span><span class="tile-copy"><small>${escapeHtml(this._config.title || 'MUSIC')}</small><strong>No Music Assistant players</strong><span>Check the HA integration or card configuration</span></span>`;
       tile.disabled = true;
       if (this._dialog.open) this._dialog.close();
+      if (!popup) this.shadowRoot.querySelector('#inline-content').innerHTML = '<div class="page"><h2>No Music Assistant players</h2><p class="muted">Check the Home Assistant integration or card configuration.</p></div>';
       return;
     }
     tile.disabled = false;
@@ -175,12 +234,46 @@ export class MaverickMusicCard extends HTMLElement {
     const title = a.media_title || (player.state === 'off' ? 'Ready to play' : 'Nothing playing');
     const artist = a.media_artist || (player.state === 'playing' ? 'Music Assistant' : 'Choose music in Music Assistant');
     const name = a.friendly_name || player.entity_id;
-    tile.innerHTML = `<span class="small-art">${artwork(player)}</span><span class="tile-copy"><small>${escapeHtml(name)}</small><strong>${escapeHtml(title)}</strong><span>${escapeHtml(artist)}</span></span><span class="chevron" aria-hidden="true">›</span>`;
-    if (!this._dialog.open) return;
-    const scrollPosition = this._dialog.scrollTop;
-    this.shadowRoot.querySelector('#content').innerHTML = this._view === 'rooms'
-      ? this._rooms(players, player) : this._player(player);
-    this._dialog.scrollTop = scrollPosition;
+    const tileMarkup = `<span class="small-art">${artwork(player)}</span><span class="tile-copy"><small>${escapeHtml(name)}</small><strong>${escapeHtml(title)}</strong><span>${escapeHtml(artist)}</span></span><span class="chevron" aria-hidden="true">›</span>`;
+    if (popup && tile.innerHTML !== tileMarkup) tile.innerHTML = tileMarkup;
+    if (popup && !this._dialog.open) return;
+    const container = this.shadowRoot.querySelector(popup ? '#content' : '#inline-content');
+    const display = this._view === 'player' ? [player.state, a.friendly_name, a.media_title,
+      a.media_artist, a.media_album_name, a.entity_picture_local, a.entity_picture,
+      a.media_duration, a.volume_level, a.supported_features] :
+      this._view === 'rooms' ? players.map((p) => [p.entity_id, p.state,
+        p.attributes?.friendly_name, p.attributes?.supported_features,
+        p.attributes?.volume_level, memberIds(p)]) : [a.friendly_name];
+    const signature = JSON.stringify([popup, this._view, player.entity_id, display,
+      this._error, this._searchResults, this._searching, this._searchQuery]);
+    if (this._signature !== signature || this._container !== container) {
+      const scroll = popup ? this._dialog.scrollTop : 0;
+      container.innerHTML = this._view === 'rooms' ? this._rooms(players, player) :
+        this._view === 'search' ? this._searchPage(player) : this._player(player);
+      if (popup) this._dialog.scrollTop = scroll;
+      this._signature = signature;
+      this._container = container;
+    }
+    if (this._view === 'player') this._patchProgress(container, player);
+  }
+
+  _tabs() {
+    return `<nav class="tabs" aria-label="Music views">${[['player','Now playing'],['search','Find music'],['rooms','Speakers']]
+      .map(([view, title]) => `<button data-action="${view}" class="${this._view === view ? 'active' : ''}" ${this._view === view ? 'aria-current="page"' : ''}>${title}</button>`).join('')}</nav>`;
+  }
+
+  _patchProgress(container, player) {
+    const attrs = player.attributes || {};
+    const length = Math.max(0, Number(attrs.media_duration) || 0);
+    let position = Math.max(0, Number(attrs.media_position) || 0);
+    if (player.state === 'playing' && attrs.media_position_updated_at) {
+      position += Math.max(0, (Date.now() - Date.parse(attrs.media_position_updated_at)) / 1000 || 0);
+    }
+    position = Math.min(position, length || position);
+    const seek = container.querySelector('[data-action="seek"]');
+    if (seek && this.shadowRoot.activeElement !== seek) seek.value = Math.min(position, Number(seek.max));
+    const elapsed = container.querySelector('[data-elapsed]');
+    if (elapsed) elapsed.textContent = duration(position);
   }
 
   _player(player) {
@@ -191,13 +284,14 @@ export class MaverickMusicCard extends HTMLElement {
     const volume = Math.round((Number(a.volume_level) || 0) * 100);
     const playing = player.state === 'playing';
     return `<div class="page player">
-      <div class="top"><button class="icon" data-action="close" aria-label="Close player">⌄</button><span class="eyebrow">${escapeHtml(name)}</span><button class="icon" data-action="rooms" aria-label="Speaker controls">♫</button></div>
+      <div class="top">${this._config.layout === 'popup' ? '<button class="icon" data-action="close" aria-label="Close player">⌄</button>' : '<span class="eyebrow">MaverickMusic</span>'}<span class="eyebrow">${escapeHtml(name)}</span><button class="icon" data-action="rooms" aria-label="Speaker controls">♫</button></div>
+      ${this._tabs()}
       <div class="art">${artwork(player)}</div>
       <div class="track"><div><h2>${escapeHtml(a.media_title || 'Ready to play')}</h2><p>${escapeHtml(a.media_artist || name)}${a.media_album_name ? ` · ${escapeHtml(a.media_album_name)}` : ''}</p></div></div>
-      <div class="seek"><input type="range" min="0" max="${Math.max(1, Math.floor(length))}" value="${Math.min(position, length || 1)}" data-action="seek" aria-label="Playback position" ${!length || !hasFeature(player, FEATURE.SEEK) ? 'disabled' : ''}><div class="times"><span>${duration(position)}</span><span>${duration(length)}</span></div></div>
+      <div class="seek"><input type="range" min="0" max="${Math.max(1, Math.floor(length))}" value="${Math.min(position, length || 1)}" data-action="seek" aria-label="Playback position" ${!length || !hasFeature(player, FEATURE.SEEK) ? 'disabled' : ''}><div class="times"><span data-elapsed>${duration(position)}</span><span>${duration(length)}</span></div></div>
       <div class="transport"><button data-action="previous" aria-label="Previous track" ${!hasFeature(player, FEATURE.PREVIOUS) ? 'disabled' : ''}>⏮</button><button class="toggle" data-action="toggle" aria-label="${playing ? 'Pause' : 'Play'}" ${!hasFeature(player, playing ? FEATURE.PAUSE : FEATURE.PLAY) ? 'disabled' : ''}>${playing ? 'Ⅱ' : '▶'}</button><button data-action="next" aria-label="Next track" ${!hasFeature(player, FEATURE.NEXT) ? 'disabled' : ''}>⏭</button></div>
       <label class="volume-line"><span aria-hidden="true">◖</span><input type="range" min="0" max="100" value="${volume}" data-action="volume" aria-label="${escapeHtml(name)} volume" ${!hasFeature(player, FEATURE.VOLUME_SET) ? 'disabled' : ''}><span aria-hidden="true">◖))</span></label>
-      <div class="actions"><button class="pill primary" data-action="rooms">Speakers</button></div>
+      <div class="actions"><button class="pill primary" data-action="search">Find music</button><button class="pill" data-action="rooms">Speakers</button></div>
       ${this._error ? `<p class="error" role="alert">${escapeHtml(this._error)}</p>` : ''}
     </div>`;
   }
@@ -205,7 +299,8 @@ export class MaverickMusicCard extends HTMLElement {
   _rooms(players, leader) {
     const grouped = new Set(memberIds(leader));
     const canJoin = hasFeature(leader, FEATURE.GROUPING);
-    return `<div class="page"><div class="top"><button class="icon" data-action="player" aria-label="Back to player">‹</button><span class="eyebrow">Whole home audio</span><button class="icon" data-action="close" aria-label="Close player">×</button></div>
+    return `<div class="page"><div class="top"><button class="icon" data-action="player" aria-label="Back to player">‹</button><span class="eyebrow">Whole home audio</span>${this._config.layout === 'popup' ? '<button class="icon" data-action="close" aria-label="Close player">×</button>' : ''}</div>
+      ${this._tabs()}
       <h2 class="room-title">Speakers</h2><p class="muted">Choose your player and adjust room volumes.</p>
       <h3 class="section">Your players</h3>
       ${players.map((room) => {
@@ -226,6 +321,61 @@ export class MaverickMusicCard extends HTMLElement {
     </div>`;
   }
 
+  _searchPage(player) {
+    const entry = musicConfigEntry(this._hass, player, this._config);
+    return `<div class="page"><div class="top"><span class="eyebrow">MaverickMusic</span><span class="eyebrow">${escapeHtml(player.attributes?.friendly_name || player.entity_id)}</span></div>
+      ${this._tabs()}
+      <h2 class="room-title">Find music</h2><p class="muted">Search your Music Assistant library and connected services. Tap a result to play it on the selected speaker.</p>
+      <form class="search-form"><input type="search" name="query" aria-label="Search music" placeholder="Artist, album, song, playlist…" value="${escapeHtml(this._searchQuery)}" required><button type="submit" ${this._searching ? 'disabled' : ''}>${this._searching ? 'Searching…' : 'Search'}</button></form>
+      ${!entry ? '<p class="error" role="alert">The Music Assistant instance ID is unavailable. Set config_entry_id in this card’s YAML to the Music Assistant integration entry ID.</p>' : ''}
+      ${this._error ? `<p class="error" role="alert">${escapeHtml(this._error)}</p>` : ''}
+      ${this._searchResults.length ? this._searchResults.map((item, index) => {
+        const image = typeof item.image === 'string' ? item.image : item.image?.path || item.image?.url || '';
+        const secondary = item.artists?.map((artist) => artist.name).join(', ') || item.artist?.name || item.section;
+        return `<div class="result"><span class="small-art">${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy">` : '<span aria-hidden="true">♫</span>'}</span><span class="result-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(secondary)} · ${escapeHtml(item.section)}</small></span><button class="icon" data-action="play-result" data-index="${index}" aria-label="Play ${escapeHtml(item.name)}">▶</button><button class="icon add" data-action="queue-result" data-index="${index}" aria-label="Play ${escapeHtml(item.name)} next">＋</button></div>`;
+      }).join('') : this._searchQuery && !this._searching && !this._error ? '<p class="muted">No results found.</p>' : ''}
+    </div>`;
+  }
+
+  async _search(query) {
+    const player = this._selected(this._players());
+    const entry = musicConfigEntry(this._hass, player, this._config);
+    if (!entry || !query.trim() || this._searching) return;
+    const version = ++this._searchVersion;
+    this._searchQuery = query.trim();
+    this._searching = true;
+    this._searchResults = [];
+    this._error = '';
+    this._render();
+    try {
+      const response = await this._hass.callService('music_assistant', 'search',
+        { config_entry_id: entry, name: this._searchQuery, limit: 8 }, undefined, false, true);
+      if (version !== this._searchVersion) return;
+      this._searchResults = searchItems(response);
+    } catch (error) {
+      if (version !== this._searchVersion) return;
+      this._error = error?.message || 'Search failed. Check the Music Assistant integration.';
+    } finally {
+      if (version === this._searchVersion) { this._searching = false; this._render(); }
+    }
+  }
+
+  async _playResult(index, enqueue) {
+    const item = this._searchResults[index];
+    const player = this._selected(this._players());
+    if (!item || !player || this._busy) return;
+    this._busy = true;
+    this._error = '';
+    try {
+      await this._hass.callService('music_assistant', 'play_media',
+        { media_id: item.uri, media_type: item.media_type, enqueue: enqueue ? 'next' : 'replace' },
+        { entity_id: player.entity_id });
+      if (!enqueue) this._view = 'player';
+    } catch (error) {
+      this._error = error?.message || 'Could not play this music.';
+    } finally { this._busy = false; this._render(); }
+  }
+
   async _service(service, data) {
     if (this._busy || !this._hass) return;
     this._busy = true;
@@ -241,7 +391,8 @@ export class MaverickMusicCard extends HTMLElement {
     const action = button.dataset.action;
     if (action === 'open') { this._view = 'player'; this._dialog.showModal(); this._render(); return; }
     if (action === 'close') { this._dialog.close(); return; }
-    if (action === 'rooms' || action === 'player') { this._view = action; this._error = ''; this._render(); return; }
+    if (action === 'rooms' || action === 'player' || action === 'search') { this._view = action; this._error = ''; this._render(); return; }
+    if (action === 'play-result' || action === 'queue-result') { this._playResult(Number(button.dataset.index), action === 'queue-result'); return; }
     if (action === 'select') { this._selectedId = button.dataset.id; this._view = 'player'; this._render(); return; }
     const player = this._selected(this._players());
     if (!player) return;
