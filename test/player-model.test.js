@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 
 globalThis.HTMLElement = class {};
-const { discoverPlayers, hasFeature, memberIds, escapeHtml } = await import('../maverick-music-card.js');
+const { discoverPlayers, hasFeature, memberIds, escapeHtml } = await import('../MaverickMusic.js');
 
 const mass = (id, extra = {}) => ({ entity_id: id, state:'playing', attributes:{ friendly_name:id, mass_player_type:'player', supported_features:524292, ...extra } });
 
