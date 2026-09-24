@@ -177,8 +177,10 @@ export class MaverickMusicCard extends HTMLElement {
     const name = a.friendly_name || player.entity_id;
     tile.innerHTML = `<span class="small-art">${artwork(player)}</span><span class="tile-copy"><small>${escapeHtml(name)}</small><strong>${escapeHtml(title)}</strong><span>${escapeHtml(artist)}</span></span><span class="chevron" aria-hidden="true">›</span>`;
     if (!this._dialog.open) return;
+    const scrollPosition = this._dialog.scrollTop;
     this.shadowRoot.querySelector('#content').innerHTML = this._view === 'rooms'
       ? this._rooms(players, player) : this._player(player);
+    this._dialog.scrollTop = scrollPosition;
   }
 
   _player(player) {
