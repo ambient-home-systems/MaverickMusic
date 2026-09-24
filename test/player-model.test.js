@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 
 globalThis.HTMLElement = class {};
 const { discoverPlayers, hasFeature, memberIds, escapeHtml, searchItems,
-  musicConfigEntry, MaverickMusicCard } = await import('../MaverickMusic.js');
+  musicConfigEntry, MaverickMusicCard, MaverickMusicCardEditor } = await import('../MaverickMusic.js');
 
 const mass = (id, extra = {}) => ({ entity_id: id, state:'playing', attributes:{ friendly_name:id, mass_player_type:'player', supported_features:524292, ...extra } });
 
@@ -111,4 +111,27 @@ test('favorite library loads on demand and can play a playlist', async () => {
   await card._playResult(1, false, 'library');
   assert.equal(calls[2][2].media_id, 'library://playlist/1');
   assert.equal(calls[2][2].media_type, 'playlist');
+});
+
+test('visual editor emits card configuration while retaining advanced YAML fields', () => {
+  const living = mass('media_player.living', { friendly_name:'Living room' });
+  const kitchen = mass('media_player.kitchen', { friendly_name:'Kitchen' });
+  const received = [];
+  const editor = Object.create(MaverickMusicCardEditor.prototype);
+  editor._config = { type:'custom:maverick-music-card', title:'Music', layout:'popup',
+    config_entry_id:'ma-entry', exclude_entities:['media_player.kitchen'], custom_setting:'keep' };
+  editor._hass = { states:{ [living.entity_id]:living, [kitchen.entity_id]:kitchen } };
+  editor._render = () => {};
+  editor.dispatchEvent = (event) => received.push(event);
+  editor._change({ target:{ name:'layout', value:'full' } });
+  assert.equal(received.at(-1).type, 'config-changed');
+  assert.equal(received.at(-1).detail.config.layout, 'full');
+  assert.equal(received.at(-1).detail.config.config_entry_id, 'ma-entry');
+  assert.equal(received.at(-1).detail.config.custom_setting, 'keep');
+  editor._change({ target:{ name:'visibility', value:'selected' } });
+  assert.deepEqual(received.at(-1).detail.config.entities, ['media_player.living']);
+  assert.equal('exclude_entities' in received.at(-1).detail.config, false);
+  editor._textChanged({ name:'title', value:'Whole home music' });
+  assert.equal(received.at(-1).detail.config.title, 'Whole home music');
+  assert.deepEqual(MaverickMusicCard.prototype.getGridOptions.call({ _config:{ layout:'full' } }), { columns:'full' });
 });
