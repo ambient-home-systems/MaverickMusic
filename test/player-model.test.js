@@ -64,6 +64,7 @@ test('progress-only updates preserve the player DOM', () => {
   const player = mass('media_player.living', { media_title:'Song', media_position:5, media_duration:90 });
   const tile = { innerHTML:'', hidden:false };
   const inline = { innerHTML:'', hidden:false, querySelector:() => null };
+  const footer = { innerHTML:'', hidden:false };
   const card = Object.create(MaverickMusicCard.prototype);
   card.isConnected = true;
   card._initialized = true;
@@ -75,7 +76,7 @@ test('progress-only updates preserve the player DOM', () => {
   card._searching = false;
   card._searchQuery = '';
   card._dialog = { open:false };
-  card.shadowRoot = { querySelector:(selector) => selector === '.tile' ? tile : inline, activeElement:null };
+  card.shadowRoot = { querySelector:(selector) => selector === '.tile' ? tile : selector === '#playing-footer' ? footer : inline, activeElement:null };
   card._render();
   const original = inline.innerHTML;
   Object.defineProperty(inline, 'innerHTML', { get:() => original, set:() => { throw new Error('progress rebuilt the DOM'); } });
@@ -113,6 +114,7 @@ test('volume updates preserve the room DOM and an active slider', () => {
   const passive = { dataset:{ id:leader.entity_id }, value:'30', parentElement:{ querySelector:() => passiveOutput } };
   const inline = { querySelector:() => null, querySelectorAll:() => [active, passive],
     set innerHTML(value) { writes++; }, get innerHTML() { return ''; } };
+  const footer = { innerHTML:'', hidden:false };
   const tile = { hidden:false, innerHTML:'' };
   const card = Object.create(MaverickMusicCard.prototype);
   card.isConnected = true;
@@ -120,9 +122,12 @@ test('volume updates preserve the room DOM and an active slider', () => {
   card._config = { layout:'full' };
   card._hass = { states:{ [leader.entity_id]:leader, [member.entity_id]:member } };
   card._view = 'rooms';
+  card._volumeDrafts = new Map([[member.entity_id, { value:74, active:true, dirty:true }]]);
+  card._draggingVolumeId = member.entity_id;
+  card._dragView = 'rooms';
   card._error = '';
   card._dialog = { open:false };
-  card.shadowRoot = { activeElement:active, querySelector:(selector) => selector === '.tile' ? tile : inline };
+  card.shadowRoot = { activeElement:active, querySelector:(selector) => selector === '.tile' ? tile : selector === '#playing-footer' ? footer : inline };
   card._render();
   leader.attributes.volume_level = 0.65;
   member.attributes.volume_level = 0.8;
@@ -131,6 +136,42 @@ test('volume updates preserve the room DOM and an active slider', () => {
   assert.equal(passive.value, 65);
   assert.equal(passiveOutput.value, '65%');
   assert.equal(active.value, '74');
+});
+
+test('volume service sends the final value once and ignores delayed server echoes', async () => {
+  const player = mass('media_player.living', { volume_level:0.2 });
+  const calls = [];
+  const card = Object.create(MaverickMusicCard.prototype);
+  card._hass = { callService:async (...args) => { calls.push(args); } };
+  card._selectedId = player.entity_id;
+  card._volumeDrafts = new Map();
+  card._render = () => {};
+  const input = { dataset:{ action:'volume' }, value:'73' };
+  card._draggingVolumeId = player.entity_id;
+  card._volumeInput(input);
+  assert.equal(card._displayVolume(player.entity_id, 0.2), 73);
+  assert.equal(calls.length, 0);
+  await card._finishVolume();
+  card._volumeInput(input);
+  await card._sendVolume(player.entity_id);
+  assert.deepEqual(calls, [['media_player', 'volume_set',
+    { entity_id:player.entity_id, volume_level:0.73 }]]);
+  assert.equal(card._displayVolume(player.entity_id, 0.2), 73);
+  assert.equal(card._displayVolume(player.entity_id, 0.73), 73);
+  assert.equal(card._volumeDrafts.size, 0);
+});
+
+test('playing footer lists only active speakers and escapes their names', () => {
+  const footer = { hidden:false, innerHTML:'' };
+  const card = Object.create(MaverickMusicCard.prototype);
+  card.shadowRoot = { querySelector:() => footer };
+  const playing = mass('media_player.living', { friendly_name:'Living & Kitchen', media_title:'A <Song>' });
+  const idle = { ...mass('media_player.office'), state:'idle' };
+  card._selectedId = playing.entity_id;
+  card._renderPlayingFooter([playing, idle], false);
+  assert.match(footer.innerHTML, /Playing now · 1/);
+  assert.match(footer.innerHTML, /Living &amp; Kitchen · A &lt;Song&gt;/);
+  assert.doesNotMatch(footer.innerHTML, /media_player.office/);
 });
 
 test('rapid Home Assistant updates render at most once per animation frame', () => {
