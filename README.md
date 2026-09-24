@@ -32,7 +32,6 @@ entities:
   - media_player.living_room
   - media_player.kitchen
   - media_player.deck_speakers
-title: Music
 ```
 
 `entities` limits the card to that list, including the chosen `entity`. `exclude_entities` hides particular entities from automatic discovery. Use the Music Assistant entities created by the integration, rather than similarly named native Sonos or Cast entities.
