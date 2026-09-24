@@ -82,3 +82,33 @@ test('progress-only updates preserve the player DOM', () => {
   player.attributes.media_position = 6;
   card._render();
 });
+
+test('favorite library loads on demand and can play a playlist', async () => {
+  const player = mass('media_player.living');
+  const calls = [];
+  const card = Object.create(MaverickMusicCard.prototype);
+  card._config = {};
+  card._hass = {
+    entities: { [player.entity_id]: { config_entry_id:'ma-entry' } },
+    callService: async (...args) => {
+      calls.push(args);
+      return args[1] === 'get_library' ? { response: { items:[{
+        name:args[2].media_type === 'album' ? 'Album' : 'Playlist',
+        uri:`library://${args[2].media_type}/1`,
+      }] } } : {};
+    },
+  };
+  card._selected = () => player;
+  card._players = () => [player];
+  card._render = () => {};
+  card._libraryResults = [];
+  card._libraryVersion = 0;
+  await card._loadLibrary();
+  assert.deepEqual(calls.slice(0, 2).map((call) => call[2]), [
+    { config_entry_id:'ma-entry', media_type:'album', favorite:true, limit:12 },
+    { config_entry_id:'ma-entry', media_type:'playlist', favorite:true, limit:12 },
+  ]);
+  await card._playResult(1, false, 'library');
+  assert.equal(calls[2][2].media_id, 'library://playlist/1');
+  assert.equal(calls[2][2].media_type, 'playlist');
+});

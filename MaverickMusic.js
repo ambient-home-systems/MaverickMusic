@@ -144,6 +144,11 @@ export class MaverickMusicCard extends HTMLElement {
     this._searchQuery = '';
     this._searching = false;
     this._searchVersion = 0;
+    this._libraryResults = [];
+    this._libraryLoading = false;
+    this._libraryLoaded = false;
+    this._libraryError = '';
+    this._libraryVersion = 0;
   }
 
   setConfig(config) {
@@ -155,6 +160,7 @@ export class MaverickMusicCard extends HTMLElement {
       throw new Error('exclude_entities must be a list of entity IDs');
     }
     this._config = config;
+    this._playerCache = null;
     this._signature = '';
     this._selectedId = config.entity || this._selectedId;
     this._render();
@@ -180,6 +186,7 @@ export class MaverickMusicCard extends HTMLElement {
   disconnectedCallback() {
     clearInterval(this._progressTimer);
     this._searchVersion++;
+    this._libraryVersion++;
   }
 
   _init() {
@@ -202,7 +209,18 @@ export class MaverickMusicCard extends HTMLElement {
     this._initialized = true;
   }
 
-  _players() { return discoverPlayers(this._hass, this._config); }
+  _players() {
+    const hass = this._hass;
+    if (!hass?.states) return [];
+    const cache = this._playerCache;
+    if (cache && cache.registry === hass.entities && Date.now() - cache.at < 30000) {
+      const players = cache.ids.map((id) => hass.states[id]).filter(Boolean);
+      if (players.length === cache.ids.length) return players;
+    }
+    const players = discoverPlayers(hass, this._config);
+    this._playerCache = { ids: players.map((p) => p.entity_id), registry: hass.entities, at: Date.now() };
+    return players;
+  }
 
   _selected(players) {
     const current = players.find((p) => p.entity_id === this._selectedId);
@@ -245,12 +263,25 @@ export class MaverickMusicCard extends HTMLElement {
         p.attributes?.friendly_name, p.attributes?.supported_features,
         p.attributes?.volume_level, memberIds(p)]) : [a.friendly_name];
     const signature = JSON.stringify([popup, this._view, player.entity_id, display,
-      this._error, this._searchResults, this._searching, this._searchQuery]);
+      this._error, this._searchResults, this._searching, this._searchQuery,
+      this._libraryResults, this._libraryLoading, this._libraryError]);
     if (this._signature !== signature || this._container !== container) {
       const scroll = popup ? this._dialog.scrollTop : 0;
+      const activeSearch = this.shadowRoot.activeElement?.matches?.('.search-form input') ?
+        { value: this.shadowRoot.activeElement.value,
+          start: this.shadowRoot.activeElement.selectionStart,
+          end: this.shadowRoot.activeElement.selectionEnd } : null;
       container.innerHTML = this._view === 'rooms' ? this._rooms(players, player) :
         this._view === 'search' ? this._searchPage(player) : this._player(player);
       if (popup) this._dialog.scrollTop = scroll;
+      if (activeSearch) {
+        const input = container.querySelector('.search-form input');
+        if (input) {
+          input.value = activeSearch.value;
+          input.focus();
+          input.setSelectionRange(activeSearch.start, activeSearch.end);
+        }
+      }
       this._signature = signature;
       this._container = container;
     }
@@ -329,12 +360,47 @@ export class MaverickMusicCard extends HTMLElement {
       <form class="search-form"><input type="search" name="query" aria-label="Search music" placeholder="Artist, album, song, playlist…" value="${escapeHtml(this._searchQuery)}" required><button type="submit" ${this._searching ? 'disabled' : ''}>${this._searching ? 'Searching…' : 'Search'}</button></form>
       ${!entry ? '<p class="error" role="alert">The Music Assistant instance ID is unavailable. Set config_entry_id in this card’s YAML to the Music Assistant integration entry ID.</p>' : ''}
       ${this._error ? `<p class="error" role="alert">${escapeHtml(this._error)}</p>` : ''}
-      ${this._searchResults.length ? this._searchResults.map((item, index) => {
-        const image = typeof item.image === 'string' ? item.image : item.image?.path || item.image?.url || '';
-        const secondary = item.artists?.map((artist) => artist.name).join(', ') || item.artist?.name || item.section;
-        return `<div class="result"><span class="small-art">${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy">` : '<span aria-hidden="true">♫</span>'}</span><span class="result-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(secondary)} · ${escapeHtml(item.section)}</small></span><button class="icon" data-action="play-result" data-index="${index}" aria-label="Play ${escapeHtml(item.name)}">▶</button><button class="icon add" data-action="queue-result" data-index="${index}" aria-label="Play ${escapeHtml(item.name)} next">＋</button></div>`;
-      }).join('') : this._searchQuery && !this._searching && !this._error ? '<p class="muted">No results found.</p>' : ''}
+      ${this._searchQuery ? `<h3 class="section">Search results</h3>${this._searchResults.length ? this._resultRows(this._searchResults, 'search') : !this._searching && !this._error ? '<p class="muted">No results found.</p>' : ''}` : ''}
+      <h3 class="section">Your library</h3>
+      ${this._libraryLoading ? '<p class="muted">Loading favorites…</p>' : ''}
+      ${this._libraryError ? `<p class="error" role="alert">${escapeHtml(this._libraryError)}</p>` : ''}
+      ${this._libraryResults.length ? this._resultRows(this._libraryResults, 'library') : this._libraryLoaded ? '<p class="muted">No favorite albums or playlists yet. Search above to play from your connected services.</p>' : ''}
     </div>`;
+  }
+
+  _resultRows(items, source) {
+    return items.map((item, index) => {
+      const image = typeof item.image === 'string' ? item.image : item.image?.path || item.image?.url || '';
+      const secondary = item.artists?.map((artist) => artist.name).join(', ') || item.artist?.name || item.section;
+      return `<div class="result"><span class="small-art">${image ? `<img src="${escapeHtml(image)}" alt="" loading="lazy">` : '<span aria-hidden="true">♫</span>'}</span><span class="result-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(secondary)} · ${escapeHtml(item.section)}</small></span><button class="icon" data-action="play-result" data-source="${source}" data-index="${index}" aria-label="Play ${escapeHtml(item.name)}">▶</button><button class="icon add" data-action="queue-result" data-source="${source}" data-index="${index}" aria-label="Play ${escapeHtml(item.name)} next">＋</button></div>`;
+    }).join('');
+  }
+
+  async _loadLibrary() {
+    if (this._libraryLoading || this._libraryLoaded) return;
+    const player = this._selected(this._players());
+    const entry = musicConfigEntry(this._hass, player, this._config);
+    if (!entry) return;
+    const version = ++this._libraryVersion;
+    this._libraryLoading = true;
+    this._render();
+    try {
+      const results = await Promise.all([['album', 'Albums'], ['playlist', 'Playlists']]
+        .map(async ([media_type, section]) => {
+          const result = await this._hass.callService('music_assistant', 'get_library',
+            { config_entry_id: entry, media_type, favorite: true, limit: 12 }, undefined, false, true);
+          return (result?.response?.items || []).filter((item) => typeof item?.uri === 'string')
+            .map((item) => ({ ...item, media_type, section }));
+        }));
+      if (version !== this._libraryVersion) return;
+      this._libraryResults = results.flat();
+      this._libraryLoaded = true;
+    } catch (error) {
+      if (version !== this._libraryVersion) return;
+      this._libraryError = error?.message || 'Could not load your library.';
+    } finally {
+      if (version === this._libraryVersion) { this._libraryLoading = false; this._render(); }
+    }
   }
 
   async _search(query) {
@@ -360,8 +426,8 @@ export class MaverickMusicCard extends HTMLElement {
     }
   }
 
-  async _playResult(index, enqueue) {
-    const item = this._searchResults[index];
+  async _playResult(index, enqueue, source = 'search') {
+    const item = (source === 'library' ? this._libraryResults : this._searchResults)[index];
     const player = this._selected(this._players());
     if (!item || !player || this._busy) return;
     this._busy = true;
@@ -391,8 +457,12 @@ export class MaverickMusicCard extends HTMLElement {
     const action = button.dataset.action;
     if (action === 'open') { this._view = 'player'; this._dialog.showModal(); this._render(); return; }
     if (action === 'close') { this._dialog.close(); return; }
-    if (action === 'rooms' || action === 'player' || action === 'search') { this._view = action; this._error = ''; this._render(); return; }
-    if (action === 'play-result' || action === 'queue-result') { this._playResult(Number(button.dataset.index), action === 'queue-result'); return; }
+    if (action === 'rooms' || action === 'player' || action === 'search') {
+      this._view = action; this._error = ''; this._render();
+      if (action === 'search') this._loadLibrary();
+      return;
+    }
+    if (action === 'play-result' || action === 'queue-result') { this._playResult(Number(button.dataset.index), action === 'queue-result', button.dataset.source); return; }
     if (action === 'select') { this._selectedId = button.dataset.id; this._view = 'player'; this._render(); return; }
     const player = this._selected(this._players());
     if (!player) return;
