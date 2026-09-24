@@ -8,7 +8,7 @@ A mobile-first Home Assistant dashboard card for Music Assistant. It combines a 
 
 1. Install [HACS](https://www.hacs.xyz/docs/use/download/download/) and connect the Music Assistant integration to Home Assistant. Confirm its players appear as `media_player` entities.
 2. Click **Add to Home Assistant** above. This opens the MaverickMusic repository in HACS; add it as a custom **Dashboard** repository if prompted, then choose **Download**. The button opens HACS and does not silently install the card.
-3. Refresh Home Assistant after HACS downloads the card. Create a **Panel** view on a dedicated music dashboard and add one manual MaverickMusic card:
+3. Refresh Home Assistant after HACS downloads the card. Create a **Panel** view on a dedicated music dashboard, choose **Add card → MaverickMusic**, and configure the card in the visual editor. The full dashboard layout is the default. If you prefer YAML, use:
 
    ```yaml
    type: custom:maverick-music-card
@@ -17,11 +17,23 @@ A mobile-first Home Assistant dashboard card for Music Assistant. It combines a 
 
 The full layout is the default. It opens directly in the dashboard, fills the available width, and is sized for a phone screen. A Panel view gives the card the full dashboard width. To keep the compact tile and popup on another dashboard, set `layout: popup`. The Home Assistant navigation header remains part of the dashboard.
 
+## Visual settings
+
+In your dashboard, choose **Edit dashboard → edit the MaverickMusic card**. The graphical editor offers:
+
+- **Display style:** full dashboard or compact tile with popup.
+- **Starting player:** automatic selection or a particular Music Assistant speaker.
+- **Player visibility:** all players or a checklist of players to show in the speaker controls.
+- **Tile heading:** an optional label for the compact tile.
+- **Advanced → Music Assistant instance ID:** only needed if Find music cannot detect the integration instance.
+
+Your existing YAML remains valid; the editor keeps unrelated configuration keys when you change a setting. A dedicated Panel view is configured at the dashboard view level, outside the card editor.
+
 Use **Find music** to browse favorite albums and playlists, or search Music Assistant tracks, albums, artists, playlists, radio, audiobooks, and podcasts. Tap ▶ to replace the current queue and play, or ＋ to play next. The library loads when you open Find music and is cached for that card session. The card uses the Music Assistant integration through Home Assistant and needs no separate Music Assistant browser token. It normally reads the Music Assistant instance ID from the selected player's entity registry entry. If the search view says the ID is unavailable, add `config_entry_id: YOUR_MUSIC_ASSISTANT_ENTRY_ID` to the card. Find that ID in the Music Assistant integration's action editor by selecting your instance and switching the action to YAML.
 
 HACS normally registers the dashboard resource for you. If the card does not appear after refreshing, check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js` (JavaScript module). This is a HACS resource check; there is no manual file installation path.
 
-Already installed an older tile-only version? In **HACS → MaverickMusic → ⋮**, choose **Update information** and then **Redownload**. Refresh the Home Assistant app or browser afterward. Version **0.3.0** shows **Now playing**, **Find music**, and **Speakers** tabs, plus `v0.3.0` beside MaverickMusic in the full card or beside the room name in the compact tile. If you still see the old tile without a version, Home Assistant is loading a cached resource. Check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js`, and refresh the app's frontend cache.
+Already installed an older version? In **HACS → MaverickMusic → ⋮**, choose **Update information** and then **Redownload**. Refresh the Home Assistant app or browser afterward. Version **0.4.0** shows a `v0.4.0` label beside MaverickMusic in the full card or beside the room name in the compact tile. If you still see an older version, check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js`, and refresh the app's frontend cache.
 
 Optionally select the starting player or restrict the available players:
 
