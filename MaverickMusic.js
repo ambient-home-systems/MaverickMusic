@@ -2,7 +2,7 @@ const FEATURE = Object.freeze({
   PAUSE: 1, SEEK: 2, VOLUME_SET: 4, PREVIOUS: 16, NEXT: 32,
   PLAY: 16384, GROUPING: 524288,
 });
-const CARD_VERSION = '0.5.0';
+const CARD_VERSION = '0.6.0';
 
 export function hasFeature(player, flag) {
   return Boolean((Number(player?.attributes?.supported_features) || 0) & flag);
@@ -85,8 +85,8 @@ const CSS = `
   dialog { position:fixed; inset:0; width:min(100vw,440px); height:100dvh; max-width:none; max-height:none; margin:auto; padding:0; border:0; color:inherit; background:#16181d; overflow:auto; overscroll-behavior:contain; box-shadow:0 0 70px #0009; }
   dialog::backdrop { background:#000b; }
   .page { min-height:100%; padding:calc(18px + env(safe-area-inset-top)) 21px calc(24px + env(safe-area-inset-bottom)); }
-  .inline { min-height:calc(100dvh - 100px); width:100%; background:#16181d; border-radius:22px; overflow:hidden; }
-  .inline .page { min-height:calc(100dvh - 100px); max-width:720px; margin:auto; }
+  .inline { min-height:calc(100dvh - 164px); width:100%; background:#16181d; border-radius:22px 22px 0 0; overflow:hidden; }
+  .inline .page { min-height:calc(100dvh - 164px); max-width:720px; margin:auto; }
   .tabs { display:flex; gap:8px; margin:18px 0 6px; }
   .tabs button { flex:1; min-height:43px; border:0; border-radius:13px; background:#ffffff12; color:#d9d4d7; font-size:12px; font-weight:700; }
   .tabs button.active { background:#f1e4dd; color:#30272b; }
@@ -108,7 +108,7 @@ const CSS = `
   .track h2 { font-size:27px; letter-spacing:-.05em; margin:0; line-height:1.14; }
   .track p { font-size:15px; color:#c6c3c7; margin:6px 0 0; }
   .seek { margin-top:24px; }
-  input[type=range] { width:100%; accent-color:#f0dfd7; touch-action:auto; }
+  input[type=range] { width:100%; min-height:44px; accent-color:#f0dfd7; touch-action:none; }
   .times { display:flex; justify-content:space-between; font-size:11px; color:#c8c2c3; font-variant-numeric:tabular-nums; }
   .transport { display:flex; align-items:center; justify-content:center; gap:34px; margin:17px 0 23px; }
   .transport button { min-width:44px; height:52px; border:0; background:transparent; color:white; font-size:27px; }
@@ -129,6 +129,13 @@ const CSS = `
   .row-buttons button.selected { background:#f1e4dd; border-color:#f1e4dd; color:#30272b; }
   .room-volume { grid-column:1 / -1; display:flex; align-items:center; gap:10px; font-size:11px; color:#c8c2c5; font-variant-numeric:tabular-nums; }
   .room-volume input { flex:1; min-height:30px; }
+  .playing-footer { position:sticky; bottom:0; z-index:1; padding:11px 18px calc(11px + env(safe-area-inset-bottom)); background:#202127; border-top:1px solid #ffffff25; border-radius:0 0 22px 22px; box-shadow:0 -5px 18px #0004; }
+  .playing-footer strong { display:block; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:#c8c2c7; margin-bottom:8px; }
+  .playing-list { display:flex; gap:8px; overflow-x:auto; scrollbar-width:none; }
+  .playing-list::-webkit-scrollbar { display:none; }
+  .playing-list button { flex:none; max-width:min(70vw,250px); min-height:36px; padding:7px 12px; border:1px solid #ffffff25; border-radius:13px; background:#ffffff12; color:#f7f2f3; font-size:12px; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .playing-list button[aria-current] { background:#f1e4dd; color:#30272b; }
+  .playing-list span { color:#aeb0bb; font-size:12px; }
   .error { margin:14px 0 0; color:#ffbdad; font-size:12px; line-height:1.4; }
   .footnote { color:#999fac; font-size:11px; line-height:1.4; margin:20px 0 0; }
   [hidden] { display:none !important; }
@@ -155,6 +162,8 @@ export class MaverickMusicCard extends HTMLElement {
     this._libraryError = '';
     this._libraryVersion = 0;
     this._pendingJoin = null;
+    this._volumeDrafts = new Map();
+    this._endVolume = () => this._finishVolume();
   }
 
   setConfig(config) {
@@ -185,6 +194,8 @@ export class MaverickMusicCard extends HTMLElement {
 
   connectedCallback() {
     this._render();
+    document.addEventListener('pointerup', this._endVolume);
+    document.addEventListener('pointercancel', this._endVolume);
     this._progressTimer = setInterval(() => {
       if (document.visibilityState === 'hidden' || this._view !== 'player' ||
           (this._config.layout === 'popup' && !this._dialog?.open)) return;
@@ -194,30 +205,47 @@ export class MaverickMusicCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    document.removeEventListener('pointerup', this._endVolume);
+    document.removeEventListener('pointercancel', this._endVolume);
     clearInterval(this._progressTimer);
     if (this._frame) cancelAnimationFrame(this._frame);
     this._frame = null;
     clearTimeout(this._joinTimer);
+    for (const draft of this._volumeDrafts.values()) {
+      clearTimeout(draft.sendTimer);
+      clearTimeout(draft.releaseTimer);
+    }
+    this._volumeDrafts.clear();
+    this._draggingVolumeId = null;
     this._searchVersion++;
     this._libraryVersion++;
   }
 
   _init() {
     if (this._initialized) return;
-    this.shadowRoot.innerHTML = `<style>${CSS}</style><button type="button" class="tile" data-action="open"></button><div class="inline" id="inline-content"></div><dialog aria-label="MaverickMusic player"><div id="content"></div></dialog>`;
+    this.shadowRoot.innerHTML = `<style>${CSS}</style><button type="button" class="tile" data-action="open"></button><div class="inline" id="inline-content"></div><div class="playing-footer" id="playing-footer"></div><dialog aria-label="MaverickMusic player"><div id="content"></div></dialog>`;
     this._dialog = this.shadowRoot.querySelector('dialog');
     this._dialog.addEventListener('close', () => { this._view = 'player'; this._error = ''; });
     this.shadowRoot.addEventListener('click', (event) => this._click(event));
     this.shadowRoot.addEventListener('change', (event) => this._change(event));
+    this.shadowRoot.addEventListener('pointerdown', (event) => {
+      const input = event.target;
+      if (!input.matches?.('[data-action="volume"], [data-action="room-volume"]')) return;
+      this._draggingVolumeId = input.dataset.action === 'volume' ? this._selectedId : input.dataset.id;
+      this._dragView = this._view;
+      const draft = this._volumeDrafts.get(this._draggingVolumeId) ||
+        { value:Number(input.value), dirty:false };
+      draft.active = true;
+      clearTimeout(draft.sendTimer);
+      this._volumeDrafts.set(this._draggingVolumeId, draft);
+    });
     this.shadowRoot.addEventListener('submit', (event) => {
       if (!event.target.matches('.search-form')) return;
       event.preventDefault();
       this._search(event.target.querySelector('input').value);
     });
     this.shadowRoot.addEventListener('input', (event) => {
-      if (event.target.matches('[data-action="room-volume"]')) {
-        event.target.parentElement.querySelector('output').value = `${event.target.value}%`;
-      }
+      if (event.target.matches('[data-action="volume"], [data-action="room-volume"]')) this._volumeInput(event.target);
     });
     this._initialized = true;
   }
@@ -258,6 +286,7 @@ export class MaverickMusicCard extends HTMLElement {
     const tile = this.shadowRoot.querySelector('.tile');
     tile.hidden = !popup;
     this.shadowRoot.querySelector('.inline').hidden = popup;
+    this._renderPlayingFooter(players, popup);
     if (!player) {
       tile.innerHTML = `<span class="small-art" aria-hidden="true">♫</span><span class="tile-copy"><small>${escapeHtml(this._config.title || 'MUSIC')}</small><strong>No Music Assistant players</strong><span>Check the HA integration or card configuration</span></span>`;
       tile.disabled = true;
@@ -285,7 +314,8 @@ export class MaverickMusicCard extends HTMLElement {
       this._error, this._pendingJoin?.member,
       this._view === 'search' ? [this._searchVersion, this._searching, this._searchQuery,
         this._libraryVersion, this._libraryLoading, this._libraryLoaded, this._libraryError] : null]);
-    if (this._signature !== signature || this._container !== container) {
+    if ((this._signature !== signature || this._container !== container) &&
+        !(this._draggingVolumeId && this._dragView === this._view && this._container === container)) {
       const scroll = popup ? this._dialog.scrollTop : 0;
       const activeSearch = this.shadowRoot.activeElement?.matches?.('.search-form input') ?
         { value: this.shadowRoot.activeElement.value,
@@ -311,17 +341,101 @@ export class MaverickMusicCard extends HTMLElement {
 
   _patchVolumes(container, players, player) {
     const volume = container.querySelector('[data-action="volume"]');
-    if (volume && this.shadowRoot.activeElement !== volume) {
-      volume.value = Math.round((Number(player.attributes?.volume_level) || 0) * 100);
+    if (volume) {
+      const value = this._displayVolume(player.entity_id, player.attributes?.volume_level);
+      if (Number(volume.value) !== value) volume.value = value;
     }
     if (this._view !== 'rooms') return;
     const volumes = new Map(players.map((room) =>
-      [room.entity_id, Math.round((Number(room.attributes?.volume_level) || 0) * 100)]));
+      [room.entity_id, this._displayVolume(room.entity_id, room.attributes?.volume_level)]));
     for (const slider of container.querySelectorAll('[data-action="room-volume"]')) {
-      if (!slider || this.shadowRoot.activeElement === slider) continue;
-      slider.value = volumes.get(slider.dataset.id) ?? 0;
-      slider.parentElement.querySelector('output').value = `${slider.value}%`;
+      const value = volumes.get(slider.dataset.id) ?? 0;
+      if (Number(slider.value) !== value) slider.value = value;
+      const output = slider.parentElement.querySelector('output');
+      if (output.value !== `${value}%`) output.value = `${value}%`;
     }
+  }
+
+  _displayVolume(id, level) {
+    const actual = Math.round((Number(level) || 0) * 100);
+    const draft = this._volumeDrafts?.get(id);
+    if (!draft) return actual;
+    if (!draft.active && !draft.inFlight && !draft.dirty && Math.abs(actual - draft.value) <= 1) {
+      clearTimeout(draft.releaseTimer);
+      this._volumeDrafts.delete(id);
+      return actual;
+    }
+    return draft.value;
+  }
+
+  _volumeInput(input) {
+    const id = input.dataset.action === 'volume' ? this._selectedId : input.dataset.id;
+    if (!id) return;
+    const draft = this._volumeDrafts.get(id) || {};
+    const value = Math.max(0, Math.min(100, Number(input.value)));
+    if (draft.value === value && !draft.dirty && (draft.inFlight || draft.releaseTimer)) return;
+    draft.value = value;
+    draft.dirty = true;
+    draft.active = this._draggingVolumeId === id;
+    clearTimeout(draft.sendTimer);
+    clearTimeout(draft.releaseTimer);
+    this._volumeDrafts.set(id, draft);
+    if (input.dataset.action === 'room-volume') input.parentElement.querySelector('output').value = `${draft.value}%`;
+    if (!draft.active) draft.sendTimer = setTimeout(() => this._sendVolume(id), 250);
+  }
+
+  _finishVolume() {
+    if (!this._draggingVolumeId) return;
+    const id = this._draggingVolumeId;
+    this._draggingVolumeId = null;
+    const draft = this._volumeDrafts.get(id);
+    if (draft) draft.active = false;
+    const pending = draft ? this._sendVolume(id) : undefined;
+    this._render();
+    return pending;
+  }
+
+  async _sendVolume(id) {
+    const draft = this._volumeDrafts.get(id);
+    if (!draft?.dirty || draft.active || draft.inFlight || !this._hass) return;
+    draft.inFlight = true;
+    draft.dirty = false;
+    const value = draft.value;
+    clearTimeout(draft.sendTimer);
+    try {
+      await this._hass.callService('media_player', 'volume_set',
+        { entity_id:id, volume_level:value / 100 });
+    } catch (error) {
+      if (!draft.dirty) {
+        this._volumeDrafts.delete(id);
+        this._error = error?.message || 'Could not change speaker volume.';
+        this._render();
+      }
+    } finally {
+      draft.inFlight = false;
+      if (draft.dirty && !draft.active) this._sendVolume(id);
+      else if (this._volumeDrafts.get(id) === draft) {
+        draft.releaseTimer = setTimeout(() => {
+          if (this._volumeDrafts.get(id) !== draft || draft.active || draft.inFlight || draft.dirty) return;
+          this._volumeDrafts.delete(id);
+          this._render();
+        }, 4000);
+      }
+    }
+  }
+
+  _renderPlayingFooter(players, popup) {
+    const footer = this.shadowRoot.querySelector('#playing-footer');
+    footer.hidden = popup;
+    if (popup) return;
+    const playing = players.filter((p) => p.state === 'playing');
+    const signature = JSON.stringify([this._selectedId, playing.map((p) =>
+      [p.entity_id, p.attributes?.friendly_name, p.attributes?.media_title])]);
+    if (this._playingSignature === signature) return;
+    this._playingSignature = signature;
+    footer.innerHTML = `<strong>Playing now · ${playing.length}</strong><div class="playing-list">${playing.length ?
+      playing.map((p) => `<button data-action="select" data-id="${escapeHtml(p.entity_id)}" ${p.entity_id === this._selectedId ? 'aria-current="true"' : ''}>${escapeHtml(p.attributes?.friendly_name || p.entity_id)}${p.attributes?.media_title ? ` · ${escapeHtml(p.attributes.media_title)}` : ''}</button>`).join('') :
+      '<span>No speakers playing</span>'}</div>`;
   }
 
   _tabs() {
@@ -553,10 +667,16 @@ export class MaverickMusicCard extends HTMLElement {
     if (!player) return;
     const action = input.dataset.action;
     if (action === 'seek' && hasFeature(player, FEATURE.SEEK)) this._service('media_seek', { entity_id:player.entity_id, seek_position:Number(input.value) });
-    if (action === 'volume' && hasFeature(player, FEATURE.VOLUME_SET)) this._service('volume_set', { entity_id:player.entity_id, volume_level:Number(input.value) / 100 });
+    if (action === 'volume' && hasFeature(player, FEATURE.VOLUME_SET)) {
+      this._volumeInput(input);
+      if (!this._draggingVolumeId) this._sendVolume(player.entity_id);
+    }
     if (action === 'room-volume') {
       const room = this._players().find((p) => p.entity_id === input.dataset.id);
-      if (hasFeature(room, FEATURE.VOLUME_SET)) this._service('volume_set', { entity_id:room.entity_id, volume_level:Number(input.value) / 100 });
+      if (hasFeature(room, FEATURE.VOLUME_SET)) {
+        this._volumeInput(input);
+        if (!this._draggingVolumeId) this._sendVolume(room.entity_id);
+      }
     }
   }
 }
