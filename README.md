@@ -33,7 +33,7 @@ Use **Find music** to browse favorite albums and playlists, or search Music Assi
 
 HACS normally registers the dashboard resource for you. If the card does not appear after refreshing, check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js` (JavaScript module). This is a HACS resource check; there is no manual file installation path.
 
-Already installed an older version? In **HACS → MaverickMusic → ⋮**, choose **Update information** and then **Redownload**. Refresh the Home Assistant app or browser afterward. Version **0.5.0** shows a `v0.5.0` label beside MaverickMusic in the full card or beside the room name in the compact tile. If you still see an older version, check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js`, and refresh the app's frontend cache.
+Already installed an older version? In **HACS → MaverickMusic → ⋮**, choose **Update information** and then **Redownload**. Refresh the Home Assistant app or browser afterward. Version **0.6.0** shows a `v0.6.0` label beside MaverickMusic in the full card or beside the room name in the compact tile. If you still see an older version, check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js`, and refresh the app's frontend cache.
 
 Optionally select the starting player or restrict the available players:
 
@@ -54,12 +54,13 @@ entities:
 - Displays live title, artist, artwork, playback state, progress, and volume.
 - Controls play, pause, previous, next, seek, and volume when the selected entity supports them.
 - Switches the controlled player and shows per-room volume sliders.
+- Shows a compact **Playing now** speaker list at the bottom of the full card; tap a speaker to control it.
 - Browses favorite albums and playlists, searches connected Music Assistant providers, and plays or queues a result from the card.
 - Offers temporary join/unjoin actions when the selected player advertises Home Assistant's `GROUPING` feature. Music Assistant may still reject a particular pairing; the card reports the error.
 
 To join speakers, first select the speaker that should keep the music queue with **Control**, then tap **Join** on the speaker that should follow it. The card sends Home Assistant's `media_player.join` action to the selected speaker, waits for its `group_members` state to confirm the join, and shows an error if Home Assistant does not confirm it within 15 seconds. Speakers on different Music Assistant instances cannot be joined. Music Assistant also requires compatible sync capable players; its [grouping guide](https://www.music-assistant.io/faq/groups/) explains supported combinations. If a pairing still fails, try the same leader and member in **Home Assistant → Developer tools → Actions → Join media players** and check the Music Assistant server logs for the specific reason.
 
-The full card batches Home Assistant state updates into animation frames and updates progress and volume controls in place, so a volume or playback position update does not replace the entire speaker list or interrupt a slider drag.
+The full card batches Home Assistant state updates into animation frames and updates progress and volume controls in place. While you drag a volume slider, its position follows your finger without being overwritten by delayed speaker state updates. The card sends the final value when you let go, or after a short pause for keyboard changes. If the speaker does not confirm the setting, its reported volume returns after a few seconds.
 
 This is an early working card. Full library navigation, queue editing, transfer, favorite management, and persistent group management are future work. It does not require HOMEii Flow or a Music Assistant API token in the browser.
 
