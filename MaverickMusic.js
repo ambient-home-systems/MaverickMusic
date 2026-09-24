@@ -2,7 +2,7 @@ const FEATURE = Object.freeze({
   PAUSE: 1, SEEK: 2, VOLUME_SET: 4, PREVIOUS: 16, NEXT: 32,
   PLAY: 16384, GROUPING: 524288,
 });
-const CARD_VERSION = '0.4.0';
+const CARD_VERSION = '0.5.0';
 
 export function hasFeature(player, flag) {
   return Boolean((Number(player?.attributes?.supported_features) || 0) & flag);
@@ -154,6 +154,7 @@ export class MaverickMusicCard extends HTMLElement {
     this._libraryLoaded = false;
     this._libraryError = '';
     this._libraryVersion = 0;
+    this._pendingJoin = null;
   }
 
   setConfig(config) {
@@ -173,7 +174,8 @@ export class MaverickMusicCard extends HTMLElement {
 
   set hass(value) {
     this._hass = value;
-    this._render();
+    if (!this.isConnected || this._frame) return;
+    this._frame = requestAnimationFrame(() => { this._frame = null; this._render(); });
   }
 
   getCardSize() { return this._config.layout === 'popup' ? 2 : 10; }
@@ -184,14 +186,18 @@ export class MaverickMusicCard extends HTMLElement {
   connectedCallback() {
     this._render();
     this._progressTimer = setInterval(() => {
-      if (this._view !== 'player') return;
-      const player = this._selected(this._players());
+      if (document.visibilityState === 'hidden' || this._view !== 'player' ||
+          (this._config.layout === 'popup' && !this._dialog?.open)) return;
+      const player = this._hass?.states?.[this._selectedId];
       if (player?.state === 'playing' && this._container) this._patchProgress(this._container, player);
     }, 1000);
   }
 
   disconnectedCallback() {
     clearInterval(this._progressTimer);
+    if (this._frame) cancelAnimationFrame(this._frame);
+    this._frame = null;
+    clearTimeout(this._joinTimer);
     this._searchVersion++;
     this._libraryVersion++;
   }
@@ -243,6 +249,11 @@ export class MaverickMusicCard extends HTMLElement {
     this._init();
     const players = this._players();
     const player = this._selected(players);
+    if (this._pendingJoin?.leader === player?.entity_id && memberIds(player).includes(this._pendingJoin.member)) {
+      clearTimeout(this._joinTimer);
+      this._pendingJoin = null;
+      this._error = '';
+    }
     const popup = this._config.layout === 'popup';
     const tile = this.shadowRoot.querySelector('.tile');
     tile.hidden = !popup;
@@ -266,13 +277,14 @@ export class MaverickMusicCard extends HTMLElement {
     const container = this.shadowRoot.querySelector(popup ? '#content' : '#inline-content');
     const display = this._view === 'player' ? [player.state, a.friendly_name, a.media_title,
       a.media_artist, a.media_album_name, a.entity_picture_local, a.entity_picture,
-      a.media_duration, a.volume_level, a.supported_features] :
+      a.media_duration, a.supported_features] :
       this._view === 'rooms' ? players.map((p) => [p.entity_id, p.state,
         p.attributes?.friendly_name, p.attributes?.supported_features,
-        p.attributes?.volume_level, memberIds(p)]) : [a.friendly_name];
+        memberIds(p)]) : [a.friendly_name];
     const signature = JSON.stringify([popup, this._view, player.entity_id, display,
-      this._error, this._searchResults, this._searching, this._searchQuery,
-      this._libraryResults, this._libraryLoading, this._libraryError]);
+      this._error, this._pendingJoin?.member,
+      this._view === 'search' ? [this._searchVersion, this._searching, this._searchQuery,
+        this._libraryVersion, this._libraryLoading, this._libraryLoaded, this._libraryError] : null]);
     if (this._signature !== signature || this._container !== container) {
       const scroll = popup ? this._dialog.scrollTop : 0;
       const activeSearch = this.shadowRoot.activeElement?.matches?.('.search-form input') ?
@@ -294,6 +306,22 @@ export class MaverickMusicCard extends HTMLElement {
       this._container = container;
     }
     if (this._view === 'player') this._patchProgress(container, player);
+    if (this._view === 'player' || this._view === 'rooms') this._patchVolumes(container, players, player);
+  }
+
+  _patchVolumes(container, players, player) {
+    const volume = container.querySelector('[data-action="volume"]');
+    if (volume && this.shadowRoot.activeElement !== volume) {
+      volume.value = Math.round((Number(player.attributes?.volume_level) || 0) * 100);
+    }
+    if (this._view !== 'rooms') return;
+    const volumes = new Map(players.map((room) =>
+      [room.entity_id, Math.round((Number(room.attributes?.volume_level) || 0) * 100)]));
+    for (const slider of container.querySelectorAll('[data-action="room-volume"]')) {
+      if (!slider || this.shadowRoot.activeElement === slider) continue;
+      slider.value = volumes.get(slider.dataset.id) ?? 0;
+      slider.parentElement.querySelector('output').value = `${slider.value}%`;
+    }
   }
 
   _tabs() {
@@ -347,11 +375,15 @@ export class MaverickMusicCard extends HTMLElement {
         const name = escapeHtml(room.attributes?.friendly_name || room.entity_id);
         const selected = room.entity_id === leader.entity_id;
         const member = grouped.has(room.entity_id);
+        const sameInstance = !musicConfigEntry(this._hass, leader, this._config) ||
+          !musicConfigEntry(this._hass, room, {}) ||
+          musicConfigEntry(this._hass, leader, this._config) === musicConfigEntry(this._hass, room, {});
         const unavailable = room.state === 'unavailable' || room.state === 'unknown';
+        const pending = this._pendingJoin?.member === room.entity_id;
         const vol = Math.round((Number(room.attributes?.volume_level) || 0) * 100);
         return `<div class="room-row"><div><strong>${name}</strong><small>${selected ? 'Selected player' : member ? 'Joined to selected player' : unavailable ? 'Unavailable' : room.state === 'playing' ? 'Playing' : 'Ready'}</small></div>
           <div class="row-buttons"><button data-action="select" data-id="${id}" class="${selected ? 'selected' : ''}" aria-label="Control ${name}" ${selected ? 'disabled' : ''}>${selected ? 'Selected' : 'Control'}</button>
-          ${!selected && (canJoin || member) ? `<button data-action="${member ? 'unjoin' : 'join'}" data-id="${id}" aria-label="${member ? 'Remove' : 'Join'} ${name}" ${this._busy || unavailable ? 'disabled' : ''}>${member ? 'Remove' : 'Join'}</button>` : ''}</div>
+          ${!selected && (canJoin || member) && sameInstance ? `<button data-action="${member ? 'unjoin' : 'join'}" data-id="${id}" aria-label="${member ? 'Remove' : 'Join'} ${name}" ${this._busy || unavailable || pending ? 'disabled' : ''}>${pending ? 'Joining…' : member ? 'Remove' : 'Join'}</button>` : ''}</div>
           ${hasFeature(room, FEATURE.VOLUME_SET) && !unavailable ? `<label class="room-volume">Volume <input type="range" min="0" max="100" value="${vol}" data-action="room-volume" data-id="${id}" aria-label="${name} volume"><output>${vol}%</output></label>` : ''}
         </div>`;
       }).join('')}
@@ -459,6 +491,39 @@ export class MaverickMusicCard extends HTMLElement {
     finally { this._busy = false; this._render(); }
   }
 
+  async _join(leader, memberId) {
+    if (this._busy || this._pendingJoin || !hasFeature(leader, FEATURE.GROUPING)) return;
+    const member = this._players().find((p) => p.entity_id === memberId);
+    if (!member || member.entity_id === leader.entity_id) return;
+    const leaderEntry = musicConfigEntry(this._hass, leader, this._config);
+    const memberEntry = musicConfigEntry(this._hass, member, {});
+    if (leaderEntry && memberEntry && leaderEntry !== memberEntry) {
+      this._error = 'These speakers belong to different Music Assistant instances.';
+      this._render();
+      return;
+    }
+    this._busy = true;
+    this._error = '';
+    this._pendingJoin = { leader:leader.entity_id, member:memberId };
+    this._render();
+    try {
+      await this._hass.callService('media_player', 'join',
+        { group_members:[memberId] }, { entity_id:leader.entity_id });
+      this._joinTimer = setTimeout(() => {
+        if (this._pendingJoin?.member !== memberId) return;
+        this._pendingJoin = null;
+        this._error = `Home Assistant did not confirm that ${member.attributes?.friendly_name || memberId} joined. Check that these players can sync in Music Assistant.`;
+        this._render();
+      }, 15000);
+    } catch (error) {
+      this._pendingJoin = null;
+      this._error = error?.message || 'Could not join these speakers. Check their grouping support in Music Assistant.';
+    } finally {
+      this._busy = false;
+      this._render();
+    }
+  }
+
   _click(event) {
     const button = event.target.closest('button[data-action]');
     if (!button || !this.shadowRoot.contains(button)) return;
@@ -477,7 +542,7 @@ export class MaverickMusicCard extends HTMLElement {
     const id = player.entity_id;
     if (action === 'toggle') this._service(player.state === 'playing' ? 'media_pause' : 'media_play', { entity_id:id });
     if (action === 'previous' || action === 'next') this._service(action === 'previous' ? 'media_previous_track' : 'media_next_track', { entity_id:id });
-    if (action === 'join' && hasFeature(player, FEATURE.GROUPING)) this._service('join', { entity_id:id, group_members:[button.dataset.id] });
+    if (action === 'join') this._join(player, button.dataset.id);
     if (action === 'unjoin' && memberIds(player).includes(button.dataset.id)) this._service('unjoin', { entity_id:button.dataset.id });
   }
 
