@@ -2,7 +2,7 @@ const FEATURE = Object.freeze({
   PAUSE: 1, SEEK: 2, VOLUME_SET: 4, PREVIOUS: 16, NEXT: 32,
   PLAY: 16384, GROUPING: 524288,
 });
-const CARD_VERSION = '0.3.0';
+const CARD_VERSION = '0.4.0';
 
 export function hasFeature(player, flag) {
   return Boolean((Number(player?.attributes?.supported_features) || 0) & flag);
@@ -59,6 +59,10 @@ export function searchItems(response) {
 
 export function musicConfigEntry(hass, player, config = {}) {
   return config.config_entry_id || hass?.entities?.[player?.entity_id]?.config_entry_id || '';
+}
+
+export function editorPlayers(hass) {
+  return discoverPlayers(hass, { exclude_entities: [] });
 }
 
 const CSS = `
@@ -173,7 +177,9 @@ export class MaverickMusicCard extends HTMLElement {
   }
 
   getCardSize() { return this._config.layout === 'popup' ? 2 : 10; }
+  getGridOptions() { return { columns: this._config.layout === 'popup' ? 6 : 'full' }; }
   static getStubConfig() { return { layout: 'full' }; }
+  static getConfigElement() { return document.createElement('maverick-music-card-editor'); }
 
   connectedCallback() {
     this._render();
@@ -253,7 +259,8 @@ export class MaverickMusicCard extends HTMLElement {
     const title = a.media_title || (player.state === 'off' ? 'Ready to play' : 'Nothing playing');
     const artist = a.media_artist || (player.state === 'playing' ? 'Music Assistant' : 'Choose music in Music Assistant');
     const name = a.friendly_name || player.entity_id;
-    const tileMarkup = `<span class="small-art">${artwork(player)}</span><span class="tile-copy"><small>${escapeHtml(name)} · v${CARD_VERSION}</small><strong>${escapeHtml(title)}</strong><span>${escapeHtml(artist)}</span></span><span class="chevron" aria-hidden="true">›</span>`;
+    const tileHeading = this._config.title ? `${this._config.title} · ${name}` : name;
+    const tileMarkup = `<span class="small-art">${artwork(player)}</span><span class="tile-copy"><small>${escapeHtml(tileHeading)} · v${CARD_VERSION}</small><strong>${escapeHtml(title)}</strong><span>${escapeHtml(artist)}</span></span><span class="chevron" aria-hidden="true">›</span>`;
     if (popup && tile.innerHTML !== tileMarkup) tile.innerHTML = tileMarkup;
     if (popup && !this._dialog.open) return;
     const container = this.shadowRoot.querySelector(popup ? '#content' : '#inline-content');
@@ -489,8 +496,146 @@ export class MaverickMusicCard extends HTMLElement {
   }
 }
 
+const EDITOR_CSS = `
+  :host { display:block; color:var(--primary-text-color,#222); font:inherit; }
+  * { box-sizing:border-box; }
+  .editor { display:grid; gap:18px; padding:8px 0 18px; }
+  label { display:grid; gap:7px; font-size:14px; font-weight:600; }
+  select,input[type=text] { width:100%; min-height:44px; border:1px solid var(--divider-color,#9997); border-radius:10px; padding:9px 12px; color:var(--primary-text-color,#222); background:var(--card-background-color,#fff); font:inherit; }
+  select:focus-visible,input:focus-visible { outline:2px solid var(--primary-color,#268bd2); outline-offset:2px; }
+  .help { margin:0; color:var(--secondary-text-color,#666); font-size:12px; line-height:1.5; }
+  fieldset { display:grid; gap:8px; margin:0; padding:10px 14px 14px; border:1px solid var(--divider-color,#9997); border-radius:10px; }
+  legend { padding:0 4px; font-size:13px; font-weight:650; }
+  .choice { display:flex; align-items:center; gap:10px; min-height:38px; font-weight:400; }
+  .choice input { width:18px; height:18px; accent-color:var(--primary-color,#268bd2); }
+  details { border-top:1px solid var(--divider-color,#9997); padding-top:12px; }
+  summary { cursor:pointer; font-size:13px; font-weight:600; }
+  details label { margin-top:12px; }
+  .notice { color:var(--error-color,#c23); }
+`;
+
+export class MaverickMusicCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode:'open' });
+    this._config = {};
+  }
+
+  setConfig(config) {
+    const next = JSON.stringify(config || {});
+    if (next === JSON.stringify(this._config)) return;
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(value) {
+    this._hass = value;
+    const players = editorPlayers(value);
+    const signature = JSON.stringify(players.map((p) => [p.entity_id, p.attributes?.friendly_name]));
+    if (signature !== this._playersSignature) {
+      this._playersSignature = signature;
+      this._render();
+    }
+  }
+
+  connectedCallback() { this._render(); }
+
+  _emit(next) {
+    this._config = next;
+    const event = new Event('config-changed', { bubbles:true, composed:true });
+    event.detail = { config: next };
+    this.dispatchEvent(event);
+  }
+
+  _render() {
+    if (!this.shadowRoot) return;
+    const players = editorPlayers(this._hass);
+    const ids = new Set(players.map((p) => p.entity_id));
+    for (const id of [...(this._config.entities || []), this._config.entity]) {
+      if (id && !ids.has(id)) {
+        players.push({ entity_id:id, attributes:{ friendly_name:`${id} (unavailable)` } });
+        ids.add(id);
+      }
+    }
+    const mode = this._config.entities || this._config.exclude_entities?.length ? 'selected' : 'all';
+    const selected = new Set(this._config.entities || players.map((p) => p.entity_id)
+      .filter((id) => !this._config.exclude_entities?.includes(id)));
+    const current = this._config.entity || '';
+    const oldFocus = this.shadowRoot.activeElement;
+    const focusedName = oldFocus?.name;
+    const cursor = oldFocus?.type === 'text' ? oldFocus.selectionStart : null;
+    this.shadowRoot.innerHTML = `<style>${EDITOR_CSS}</style><div class="editor">
+      <label>Display style<select name="layout"><option value="full" ${this._config.layout !== 'popup' ? 'selected' : ''}>Full dashboard</option><option value="popup" ${this._config.layout === 'popup' ? 'selected' : ''}>Compact tile with popup</option></select></label>
+      <p class="help">For a phone-sized music dashboard, use Full dashboard in a Panel view.</p>
+      <label>Starting player<select name="entity"><option value="" ${!current ? 'selected' : ''}>Automatic (first playing player)</option>${players.map((p) => `<option value="${escapeHtml(p.entity_id)}" ${p.entity_id === current ? 'selected' : ''}>${escapeHtml(p.attributes?.friendly_name || p.entity_id)}</option>`).join('')}</select></label>
+      <label>Player visibility<select name="visibility"><option value="all" ${mode === 'all' ? 'selected' : ''}>All Music Assistant players</option><option value="selected" ${mode === 'selected' ? 'selected' : ''}>Only selected players</option></select></label>
+      ${mode === 'selected' ? `<fieldset><legend>Visible players</legend>${players.map((p) => `<label class="choice"><input type="checkbox" name="player" value="${escapeHtml(p.entity_id)}" ${selected.has(p.entity_id) ? 'checked' : ''}>${escapeHtml(p.attributes?.friendly_name || p.entity_id)}</label>`).join('') || '<p class="help">No Music Assistant players found yet.</p>'}</fieldset>` : ''}
+      <label>Tile heading<input type="text" name="title" value="${escapeHtml(this._config.title || '')}" placeholder="Optional, e.g. Whole home music"></label>
+      <details ${this._config.config_entry_id ? 'open' : ''}><summary>Advanced</summary><label>Music Assistant instance ID<input type="text" name="config_entry_id" value="${escapeHtml(this._config.config_entry_id || '')}" placeholder="Usually found automatically"></label><p class="help">Set this only if Find music says the instance ID is unavailable.</p></details>
+      <p class="help notice" id="notice" role="alert" hidden></p>
+    </div>`;
+    if (!this._listenersAdded) {
+      this.shadowRoot.addEventListener('change', (event) => this._change(event));
+      this.shadowRoot.addEventListener('input', (event) => {
+        if (event.target.type === 'text') this._textChanged(event.target);
+      });
+      this._listenersAdded = true;
+    }
+    if (focusedName) {
+      const control = this.shadowRoot.querySelector(`[name="${focusedName}"]`);
+      if (control) {
+        control.focus();
+        if (cursor !== null) control.setSelectionRange(cursor, cursor);
+      }
+    }
+  }
+
+  _textChanged(input) {
+    const next = { ...this._config };
+    const value = input.value.trim();
+    if (value) next[input.name] = value;
+    else delete next[input.name];
+    this._emit(next);
+  }
+
+  _change(event) {
+    const control = event.target;
+    const next = { ...this._config };
+    if (control.name === 'layout') next.layout = control.value;
+    else if (control.name === 'entity') {
+      if (control.value) next.entity = control.value;
+      else delete next.entity;
+    } else if (control.name === 'visibility') {
+      if (control.value === 'all') {
+        delete next.entities;
+        delete next.exclude_entities;
+      } else {
+        const players = editorPlayers(this._hass);
+        next.entities = this._config.entities || players.map((p) => p.entity_id)
+          .filter((id) => !this._config.exclude_entities?.includes(id));
+        delete next.exclude_entities;
+      }
+    } else if (control.name === 'player') {
+      const choices = [...this.shadowRoot.querySelectorAll('[name="player"]:checked')].map((input) => input.value);
+      if (!choices.length) {
+        control.checked = true;
+        const notice = this.shadowRoot.querySelector('#notice');
+        notice.textContent = 'Keep at least one player selected.';
+        notice.hidden = false;
+        return;
+      }
+      next.entities = choices;
+      delete next.exclude_entities;
+      if (next.entity && !choices.includes(next.entity)) delete next.entity;
+    } else return;
+    this._emit(next);
+    this._render();
+  }
+}
+
 if (typeof customElements !== 'undefined' && !customElements.get('maverick-music-card')) {
   customElements.define('maverick-music-card', MaverickMusicCard);
+  if (!customElements.get('maverick-music-card-editor')) customElements.define('maverick-music-card-editor', MaverickMusicCardEditor);
   window.customCards = window.customCards || [];
-  window.customCards.push({ type:'maverick-music-card', name:'MaverickMusic', description:'Mobile-first Music Assistant controls' });
+  window.customCards.push({ type:'maverick-music-card', name:'MaverickMusic', description:'Mobile-first Music Assistant controls', documentationURL:'https://github.com/ambient-home-systems/MaverickMusic#install-with-hacs' });
 }
