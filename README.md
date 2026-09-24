@@ -21,7 +21,7 @@ Use **Find music** to browse favorite albums and playlists, or search Music Assi
 
 HACS normally registers the dashboard resource for you. If the card does not appear after refreshing, check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js` (JavaScript module). This is a HACS resource check; there is no manual file installation path.
 
-Already installed an older tile-only version? In **HACS → MaverickMusic → ⋮**, choose **Update information** and then **Redownload**. Refresh the Home Assistant app or browser afterward. The updated card shows **Now playing**, **Find music**, and **Speakers** tabs; if you still see only the tile, check the browser cache and that your YAML does not set `layout: popup`.
+Already installed an older tile-only version? In **HACS → MaverickMusic → ⋮**, choose **Update information** and then **Redownload**. Refresh the Home Assistant app or browser afterward. Version **0.3.0** shows **Now playing**, **Find music**, and **Speakers** tabs, plus `v0.3.0` beside MaverickMusic in the full card or beside the room name in the compact tile. If you still see the old tile without a version, Home Assistant is loading a cached resource. Check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js`, and refresh the app's frontend cache.
 
 Optionally select the starting player or restrict the available players:
 
