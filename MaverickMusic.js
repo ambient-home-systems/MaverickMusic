@@ -2,6 +2,7 @@ const FEATURE = Object.freeze({
   PAUSE: 1, SEEK: 2, VOLUME_SET: 4, PREVIOUS: 16, NEXT: 32,
   PLAY: 16384, GROUPING: 524288,
 });
+const CARD_VERSION = '0.3.0';
 
 export function hasFeature(player, flag) {
   return Boolean((Number(player?.attributes?.supported_features) || 0) & flag);
@@ -252,7 +253,7 @@ export class MaverickMusicCard extends HTMLElement {
     const title = a.media_title || (player.state === 'off' ? 'Ready to play' : 'Nothing playing');
     const artist = a.media_artist || (player.state === 'playing' ? 'Music Assistant' : 'Choose music in Music Assistant');
     const name = a.friendly_name || player.entity_id;
-    const tileMarkup = `<span class="small-art">${artwork(player)}</span><span class="tile-copy"><small>${escapeHtml(name)}</small><strong>${escapeHtml(title)}</strong><span>${escapeHtml(artist)}</span></span><span class="chevron" aria-hidden="true">›</span>`;
+    const tileMarkup = `<span class="small-art">${artwork(player)}</span><span class="tile-copy"><small>${escapeHtml(name)} · v${CARD_VERSION}</small><strong>${escapeHtml(title)}</strong><span>${escapeHtml(artist)}</span></span><span class="chevron" aria-hidden="true">›</span>`;
     if (popup && tile.innerHTML !== tileMarkup) tile.innerHTML = tileMarkup;
     if (popup && !this._dialog.open) return;
     const container = this.shadowRoot.querySelector(popup ? '#content' : '#inline-content');
@@ -315,7 +316,7 @@ export class MaverickMusicCard extends HTMLElement {
     const volume = Math.round((Number(a.volume_level) || 0) * 100);
     const playing = player.state === 'playing';
     return `<div class="page player">
-      <div class="top">${this._config.layout === 'popup' ? '<button class="icon" data-action="close" aria-label="Close player">⌄</button>' : '<span class="eyebrow">MaverickMusic</span>'}<span class="eyebrow">${escapeHtml(name)}</span><button class="icon" data-action="rooms" aria-label="Speaker controls">♫</button></div>
+      <div class="top">${this._config.layout === 'popup' ? '<button class="icon" data-action="close" aria-label="Close player">⌄</button>' : `<span class="eyebrow">MaverickMusic v${CARD_VERSION}</span>`}<span class="eyebrow">${escapeHtml(name)}</span><button class="icon" data-action="rooms" aria-label="Speaker controls">♫</button></div>
       ${this._tabs()}
       <div class="art">${artwork(player)}</div>
       <div class="track"><div><h2>${escapeHtml(a.media_title || 'Ready to play')}</h2><p>${escapeHtml(a.media_artist || name)}${a.media_album_name ? ` · ${escapeHtml(a.media_album_name)}` : ''}</p></div></div>
@@ -354,7 +355,7 @@ export class MaverickMusicCard extends HTMLElement {
 
   _searchPage(player) {
     const entry = musicConfigEntry(this._hass, player, this._config);
-    return `<div class="page"><div class="top"><span class="eyebrow">MaverickMusic</span><span class="eyebrow">${escapeHtml(player.attributes?.friendly_name || player.entity_id)}</span></div>
+    return `<div class="page"><div class="top"><span class="eyebrow">MaverickMusic v${CARD_VERSION}</span><span class="eyebrow">${escapeHtml(player.attributes?.friendly_name || player.entity_id)}</span></div>
       ${this._tabs()}
       <h2 class="room-title">Find music</h2><p class="muted">Search your Music Assistant library and connected services. Tap a result to play it on the selected speaker.</p>
       <form class="search-form"><input type="search" name="query" aria-label="Search music" placeholder="Artist, album, song, playlist…" value="${escapeHtml(this._searchQuery)}" required><button type="submit" ${this._searching ? 'disabled' : ''}>${this._searching ? 'Searching…' : 'Search'}</button></form>
