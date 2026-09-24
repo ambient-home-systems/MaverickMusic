@@ -8,11 +8,16 @@ A mobile-first Home Assistant dashboard card for Music Assistant. It combines a 
 
 1. Install [HACS](https://www.hacs.xyz/docs/use/download/download/) and connect the Music Assistant integration to Home Assistant. Confirm its players appear as `media_player` entities.
 2. Click **Add to Home Assistant** above. This opens the MaverickMusic repository in HACS; add it as a custom **Dashboard** repository if prompted, then choose **Download**. The button opens HACS and does not silently install the card.
-3. Refresh Home Assistant after HACS downloads the card. Add **MaverickMusic** to a dashboard, or use a manual card with:
+3. Refresh Home Assistant after HACS downloads the card. Create a **Panel** view on a dedicated music dashboard and add one manual MaverickMusic card:
 
    ```yaml
    type: custom:maverick-music-card
+   layout: full
    ```
+
+The full layout is the default. It opens directly in the dashboard, fills the available width, and is sized for a phone screen. A Panel view gives the card the full dashboard width. To keep the compact tile and popup on another dashboard, set `layout: popup`. The Home Assistant navigation header remains part of the dashboard.
+
+Use **Find music** to search Music Assistant tracks, albums, artists, playlists, radio, audiobooks, and podcasts. Tap ▶ to replace the current queue and play, or ＋ to play next. The card uses the Music Assistant integration through Home Assistant and needs no separate Music Assistant browser token. It normally reads the Music Assistant instance ID from the selected player's entity registry entry. If the search view says the ID is unavailable, add `config_entry_id: YOUR_MUSIC_ASSISTANT_ENTRY_ID` to the card. Find that ID in the Music Assistant integration's action editor by selecting your instance and switching the action to YAML.
 
 HACS normally registers the dashboard resource for you. If the card does not appear after refreshing, check **Settings → Dashboards → Resources** for `/hacsfiles/MaverickMusic/MaverickMusic.js` (JavaScript module). This is a HACS resource check; there is no manual file installation path.
 
@@ -35,9 +40,10 @@ entities:
 - Displays live title, artist, artwork, playback state, progress, and volume.
 - Controls play, pause, previous, next, seek, and volume when the selected entity supports them.
 - Switches the controlled player and shows per-room volume sliders.
+- Searches connected Music Assistant providers and plays or queues a result from the card.
 - Offers temporary join/unjoin actions when the selected player advertises Home Assistant's `GROUPING` feature. Music Assistant may still reject a particular pairing; the card reports the error.
 
-This is an early working card. Search, library browsing, queue editing, transfer, favorite state, and persistent group management are future work. It does not require HOMEii Flow or a Music Assistant API token in the browser.
+This is an early working card. Library browsing without a search term, queue editing, transfer, favorite state, and persistent group management are future work. It does not require HOMEii Flow or a Music Assistant API token in the browser.
 
 ## Development
 
